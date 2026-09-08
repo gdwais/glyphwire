@@ -1,0 +1,17 @@
+[package]
+name = "octomark"
+version = "0.1.0"
+edition = "2021"
+description = "A fast, local Markdown editor and live preview for macOS"
+license = "MIT"
+repository = "https://github.com/gdwais/octomark"
+
+[dependencies]
+eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "glow"] }
+egui_commonmark = { version = "=0.21.1", features = ["better_syntax_highlighting", "fetch", "svg"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
