@@ -11,6 +11,8 @@ A fast, local Markdown editor and live preview for macOS, written in Rust.
 - CommonMark plus tables, task lists, strikethrough, footnotes, and highlighted code blocks
 - Local and remote images
 - Clickable links
+- Cyberpunk-inspired neon interface
+- Non-blocking CLI—the terminal is released as soon as the window launches
 
 ## Install
 
@@ -36,6 +38,8 @@ From any directory:
 ```sh
 octomark .
 ```
+
+The command launches Octomark in a separate process and immediately returns control to your terminal.
 
 Or open a Markdown file directly:
 

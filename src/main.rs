@@ -1,14 +1,27 @@
 mod app;
 
-use std::{env, path::PathBuf, process::ExitCode};
+use std::{
+    env,
+    path::PathBuf,
+    process::{Command, ExitCode, Stdio},
+};
 
 use app::OctomarkApp;
 use eframe::egui;
 
-const HELP: &str = "Octomark — a local Markdown editor and live preview\n\nUSAGE:\n    octomark <PATH>\n\nARGS:\n    <PATH>    A directory or Markdown file\n\nEXAMPLES:\n    octomark .\n    octomark README.md";
+const GUI_FLAG: &str = "--octomark-gui-process";
+const HELP: &str = "Octomark — a local Markdown editor and live preview\n\nUSAGE:\n    octomark <PATH>\n\nARGS:\n    <PATH>    A directory or Markdown file\n\nEXAMPLES:\n    octomark .\n    octomark README.md\n\nThe command returns immediately after launching the app.";
 
 fn main() -> ExitCode {
-    let path = match parse_path(env::args_os().skip(1).collect()) {
+    let mut arguments: Vec<_> = env::args_os().skip(1).collect();
+    let is_gui_process = arguments
+        .first()
+        .is_some_and(|argument| argument == GUI_FLAG);
+    if is_gui_process {
+        arguments.remove(0);
+    }
+
+    let path = match parse_path(arguments) {
         Ok(Some(path)) => path,
         Ok(None) => return ExitCode::SUCCESS,
         Err(message) => {
@@ -17,18 +30,51 @@ fn main() -> ExitCode {
         }
     };
 
+    if is_gui_process {
+        run_app(path)
+    } else {
+        launch_app(path)
+    }
+}
+
+fn launch_app(path: PathBuf) -> ExitCode {
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            eprintln!("octomark: could not locate the application binary: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match Command::new(executable)
+        .arg(GUI_FLAG)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("octomark: could not launch the application: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_app(path: PathBuf) -> ExitCode {
     let title = path
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| format!("{name} — Octomark"))
+        .map(|name| format!("{name} // Octomark"))
         .unwrap_or_else(|| "Octomark".to_owned());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
             .with_app_id("com.octomark.editor")
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 560.0]),
+            .with_inner_size([1480.0, 920.0])
+            .with_min_inner_size([960.0, 600.0]),
         ..Default::default()
     };
 
