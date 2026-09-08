@@ -27,7 +27,7 @@ const DANGER: Color32 = Color32::from_rgb(255, 78, 112);
 const GRID: Color32 = Color32::from_rgba_premultiplied(25, 198, 220, 12);
 const BORDER: Color32 = Color32::from_rgb(22, 69, 88);
 
-pub struct OctomarkApp {
+pub struct GlyphwireApp {
     root: PathBuf,
     current_file: Option<PathBuf>,
     document: String,
@@ -46,7 +46,7 @@ enum SaveStatus {
     Error(String),
 }
 
-impl OctomarkApp {
+impl GlyphwireApp {
     pub fn new(context: &eframe::CreationContext<'_>, opened_path: PathBuf) -> Self {
         let (root, initial_file) = if opened_path.is_file() {
             (
@@ -190,7 +190,7 @@ impl OctomarkApp {
     }
 }
 
-impl eframe::App for OctomarkApp {
+impl eframe::App for GlyphwireApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.save_if_due();
 
@@ -212,14 +212,14 @@ impl eframe::App for OctomarkApp {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new("OCTO")
+                                RichText::new("GLYPH")
                                     .family(FontFamily::Monospace)
                                     .size(22.0)
                                     .strong()
                                     .color(MAGENTA),
                             );
                             ui.label(
-                                RichText::new("//MARK")
+                                RichText::new("//WIRE")
                                     .family(FontFamily::Monospace)
                                     .size(22.0)
                                     .strong()

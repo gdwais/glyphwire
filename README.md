@@ -1,6 +1,6 @@
-# Octomark
+# Glyphwire
 
-A fast, local Markdown editor and live preview for macOS, written in Rust.
+A fast, cyberpunk-styled local Markdown editor and live preview for macOS, written in Rust.
 
 ## Features
 
@@ -19,7 +19,7 @@ A fast, local Markdown editor and live preview for macOS, written in Rust.
 Install Rust with [rustup](https://rustup.rs/) if needed, then run:
 
 ```sh
-cd ~/Development/octomark
+cd ~/Development/glyphwire
 cargo install --path .
 ```
 
@@ -36,15 +36,22 @@ Add that line to `~/.zshrc` if it is not already present.
 From any directory:
 
 ```sh
-octomark .
+glyphwire .
 ```
 
-The command launches Octomark in a separate process and immediately returns control to your terminal.
+The command launches Glyphwire in a separate process and immediately returns control to your terminal.
 
-Or open a Markdown file directly:
+Or use the short `gw` alias:
 
 ```sh
-octomark README.md
+gw .
+```
+
+Open a Markdown file directly with either command:
+
+```sh
+glyphwire README.md
+gw README.md
 ```
 
 Files with `.md` and `.markdown` extensions are editable. Other files remain visible but disabled in the file browser.

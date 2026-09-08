@@ -922,6 +922,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glyphwire"
+version = "0.2.0"
+dependencies = [
+ "eframe",
+ "egui_commonmark",
+ "image",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1682,15 +1691,6 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "octomark"
-version = "0.2.0"
-dependencies = [
- "eframe",
- "egui_commonmark",
- "image",
 ]
 
 [[package]]
