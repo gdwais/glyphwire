@@ -7,6 +7,7 @@ A fast, cyberpunk-styled local Markdown editor and live preview for macOS, writt
 - Open a directory or a Markdown file from Terminal
 - Browse all files and expandable subdirectories
 - Edit raw Markdown beside a live preview
+- Linked proportional scrolling between source and preview panes
 - Auto-save after you stop typing
 - CommonMark plus tables, task lists, strikethrough, footnotes, and highlighted code blocks
 - Local and remote images

@@ -34,6 +34,9 @@ pub struct GlyphwireApp {
     dirty_since: Option<Instant>,
     save_status: SaveStatus,
     markdown_cache: CommonMarkCache,
+    scroll_fraction: f32,
+    editor_max_scroll: f32,
+    preview_max_scroll: f32,
 }
 
 #[derive(Default)]
@@ -69,6 +72,9 @@ impl GlyphwireApp {
             dirty_since: None,
             save_status: SaveStatus::Idle,
             markdown_cache: CommonMarkCache::default(),
+            scroll_fraction: 0.0,
+            editor_max_scroll: 0.0,
+            preview_max_scroll: 0.0,
         };
 
         if let Some(path) = initial_file {
@@ -93,6 +99,9 @@ impl GlyphwireApp {
                 self.dirty_since = None;
                 self.save_status = SaveStatus::Saved;
                 self.markdown_cache = CommonMarkCache::default();
+                self.scroll_fraction = 0.0;
+                self.editor_max_scroll = 0.0;
+                self.preview_max_scroll = 0.0;
             }
             Err(error) => {
                 self.save_status =
@@ -187,6 +196,41 @@ impl GlyphwireApp {
         let characters = self.document.chars().count();
         (lines, words, characters)
     }
+
+    fn requested_scroll(&self, max_scroll: f32) -> f32 {
+        self.scroll_fraction * max_scroll
+    }
+
+    fn sync_scroll(
+        &mut self,
+        actual_offset: f32,
+        requested_offset: f32,
+        content_height: f32,
+        viewport_height: f32,
+        pane: ScrollPane,
+        context: &egui::Context,
+    ) {
+        let max_scroll = (content_height - viewport_height).max(0.0);
+        let previous_max = match pane {
+            ScrollPane::Editor => &mut self.editor_max_scroll,
+            ScrollPane::Preview => &mut self.preview_max_scroll,
+        };
+        let dimensions_changed = (*previous_max - max_scroll).abs() > 0.5;
+        *previous_max = max_scroll;
+
+        if max_scroll > 0.0 && (actual_offset - requested_offset).abs() > 0.5 {
+            self.scroll_fraction = (actual_offset / max_scroll).clamp(0.0, 1.0);
+            context.request_repaint();
+        } else if dimensions_changed {
+            context.request_repaint();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScrollPane {
+    Editor,
+    Preview,
 }
 
 impl eframe::App for GlyphwireApp {
@@ -289,6 +333,12 @@ impl eframe::App for GlyphwireApp {
                                 .size(10.0)
                                 .color(MUTED),
                         );
+                        ui.label(
+                            RichText::new("SCROLL // LINKED")
+                                .monospace()
+                                .size(10.0)
+                                .color(CYAN),
+                        );
                         if let Some(error) = self.status_detail() {
                             ui.label(RichText::new(error).monospace().size(10.0).color(DANGER));
                         }
@@ -363,7 +413,8 @@ impl eframe::App for GlyphwireApp {
                 neon_rule(ui, CYAN);
 
                 if self.current_file.is_some() {
-                    egui::Frame::new()
+                    let requested_scroll = self.requested_scroll(self.editor_max_scroll);
+                    let frame_output = egui::Frame::new()
                         .fill(Color32::from_rgb(4, 8, 17))
                         .stroke(Stroke::new(1.0_f32, Color32::from_rgb(20, 92, 108)))
                         .corner_radius(CornerRadius::same(3))
@@ -371,6 +422,7 @@ impl eframe::App for GlyphwireApp {
                         .show(ui, |ui| {
                             egui::ScrollArea::both()
                                 .id_salt("markdown_editor_scroll")
+                                .vertical_scroll_offset(requested_scroll)
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
                                     let editor = egui::TextEdit::multiline(&mut self.document)
@@ -384,8 +436,17 @@ impl eframe::App for GlyphwireApp {
                                     if ui.add_sized(ui.available_size(), editor).changed() {
                                         self.schedule_save(context);
                                     }
-                                });
+                                })
                         });
+                    let scroll_output = frame_output.inner;
+                    self.sync_scroll(
+                        scroll_output.state.offset.y,
+                        requested_scroll,
+                        scroll_output.content_size.y,
+                        scroll_output.inner_rect.height(),
+                        ScrollPane::Editor,
+                        context,
+                    );
                 } else {
                     empty_state(
                         ui,
@@ -407,13 +468,16 @@ impl eframe::App for GlyphwireApp {
 
                 if self.current_file.is_some() {
                     let base_uri = self.image_base_uri();
-                    egui::Frame::new()
+                    let requested_scroll = self.requested_scroll(self.preview_max_scroll);
+                    let frame_output = egui::Frame::new()
                         .fill(Color32::from_rgb(10, 16, 29))
                         .stroke(Stroke::new(1.0_f32, BORDER))
                         .corner_radius(CornerRadius::same(3))
                         .inner_margin(egui::Margin::same(14))
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
+                                .id_salt("markdown_preview_scroll")
+                                .vertical_scroll_offset(requested_scroll)
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
@@ -423,8 +487,17 @@ impl eframe::App for GlyphwireApp {
                                         .default_width(Some(max_width))
                                         .default_implicit_uri_scheme(base_uri)
                                         .show(ui, &mut self.markdown_cache, &self.document);
-                                });
+                                })
                         });
+                    let scroll_output = frame_output.inner;
+                    self.sync_scroll(
+                        scroll_output.state.offset.y,
+                        requested_scroll,
+                        scroll_output.content_size.y,
+                        scroll_output.inner_rect.height(),
+                        ScrollPane::Preview,
+                        context,
+                    );
                 } else {
                     empty_state(ui, "NO SIGNAL", "Rendered markdown will stream here");
                 }
