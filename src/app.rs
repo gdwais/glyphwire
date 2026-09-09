@@ -24,7 +24,6 @@ const MAGENTA: Color32 = Color32::from_rgb(255, 45, 202);
 const LIME: Color32 = Color32::from_rgb(140, 255, 124);
 const AMBER: Color32 = Color32::from_rgb(255, 199, 82);
 const DANGER: Color32 = Color32::from_rgb(255, 78, 112);
-const GRID: Color32 = Color32::from_rgba_premultiplied(25, 198, 220, 12);
 const BORDER: Color32 = Color32::from_rgb(22, 69, 88);
 
 pub struct GlyphwireApp {
@@ -313,7 +312,6 @@ impl eframe::App for GlyphwireApp {
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(context, |ui| {
-                paint_grid(ui);
                 panel_header(ui, "01", "DATA TREE", "ALL FILES");
                 neon_rule(ui, MAGENTA);
 
@@ -361,7 +359,6 @@ impl eframe::App for GlyphwireApp {
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(context, |ui| {
-                paint_grid(ui);
                 panel_header(ui, "02", "SOURCE BUFFER", "RAW MARKDOWN");
                 neon_rule(ui, CYAN);
 
@@ -570,28 +567,6 @@ fn neon_rule(ui: &mut egui::Ui, color: Color32) {
         Stroke::new(1.0_f32, color.gamma_multiply(0.65)),
     );
     painter.circle_filled(response.rect.left_center(), 2.0, color);
-}
-
-fn paint_grid(ui: &egui::Ui) {
-    let rect = ui.max_rect();
-    let painter = ui.painter();
-    let step = 36.0;
-    let mut x = (rect.left() / step).floor() * step;
-    while x < rect.right() {
-        painter.line_segment(
-            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            Stroke::new(0.5_f32, GRID),
-        );
-        x += step;
-    }
-    let mut y = (rect.top() / step).floor() * step;
-    while y < rect.bottom() {
-        painter.line_segment(
-            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-            Stroke::new(0.5_f32, GRID),
-        );
-        y += step;
-    }
 }
 
 fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
