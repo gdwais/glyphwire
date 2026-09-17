@@ -49,23 +49,19 @@ fn help(command_name: &str) -> String {
     )
 }
 
-fn launch_app(path: PathBuf, command_name: &str) -> ExitCode {
-    let executable = match env::current_exe() {
-        Ok(executable) => executable,
-        Err(error) => {
-            eprintln!("{command_name}: could not locate the application binary: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    match Command::new(executable)
+pub(crate) fn spawn_window(path: &Path) -> std::io::Result<()> {
+    Command::new(env::current_exe()?)
         .arg(GUI_FLAG)
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-    {
+        .spawn()?;
+    Ok(())
+}
+
+fn launch_app(path: PathBuf, command_name: &str) -> ExitCode {
+    match spawn_window(&path) {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{command_name}: could not launch the application: {error}");

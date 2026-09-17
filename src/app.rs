@@ -2,15 +2,14 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 
 use eframe::egui::{
     self, Align, Color32, CornerRadius, FontFamily, FontId, Layout, RichText, Stroke, TextStyle,
 };
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
-const AUTO_SAVE_DELAY: Duration = Duration::from_millis(400);
+mod document;
+use document::Document;
 
 const VOID: Color32 = Color32::from_rgb(3, 5, 12);
 const DEEP: Color32 = Color32::from_rgb(6, 9, 19);
@@ -18,7 +17,7 @@ const PANEL: Color32 = Color32::from_rgb(8, 13, 27);
 const SURFACE: Color32 = Color32::from_rgb(12, 20, 38);
 const SURFACE_HOVER: Color32 = Color32::from_rgb(17, 31, 53);
 const TEXT: Color32 = Color32::from_rgb(218, 235, 255);
-const MUTED: Color32 = Color32::from_rgb(94, 112, 144);
+const MUTED: Color32 = Color32::from_rgb(155, 173, 198);
 const CYAN: Color32 = Color32::from_rgb(35, 242, 255);
 const MAGENTA: Color32 = Color32::from_rgb(255, 45, 202);
 const LIME: Color32 = Color32::from_rgb(140, 255, 124);
@@ -28,28 +27,19 @@ const BORDER: Color32 = Color32::from_rgb(22, 69, 88);
 
 pub struct GlyphwireApp {
     root: PathBuf,
-    current_file: Option<PathBuf>,
-    document: String,
-    dirty: bool,
-    dirty_since: Option<Instant>,
-    save_status: SaveStatus,
-    markdown_cache: CommonMarkCache,
-    scroll_fraction: f32,
-    editor_max_scroll: f32,
-    preview_max_scroll: f32,
-}
-
-#[derive(Default)]
-enum SaveStatus {
-    #[default]
-    Idle,
-    Pending,
-    Saved,
-    Error(String),
+    documents: Vec<Document>,
+    active: Option<usize>,
+    error: Option<String>,
+    pending_delete: Option<PathBuf>,
 }
 
 impl GlyphwireApp {
     pub fn new(context: &eframe::CreationContext<'_>, opened_path: PathBuf) -> Self {
+        configure_theme(&context.egui_ctx);
+        Self::open(opened_path)
+    }
+
+    fn open(opened_path: PathBuf) -> Self {
         let (root, initial_file) = if opened_path.is_file() {
             (
                 opened_path
@@ -61,22 +51,13 @@ impl GlyphwireApp {
         } else {
             (opened_path, None)
         };
-
-        configure_theme(&context.egui_ctx);
-
         let mut app = Self {
             root,
-            current_file: None,
-            document: String::new(),
-            dirty: false,
-            dirty_since: None,
-            save_status: SaveStatus::Idle,
-            markdown_cache: CommonMarkCache::default(),
-            scroll_fraction: 0.0,
-            editor_max_scroll: 0.0,
-            preview_max_scroll: 0.0,
+            documents: Vec::new(),
+            active: None,
+            error: None,
+            pending_delete: None,
         };
-
         if let Some(path) = initial_file {
             app.load_file(path);
         }
@@ -84,439 +65,404 @@ impl GlyphwireApp {
     }
 
     fn load_file(&mut self, path: PathBuf) {
-        if self.current_file.as_ref() == Some(&path) {
-            return;
-        }
-        if !self.save_now() {
-            return;
-        }
-
-        match fs::read_to_string(&path) {
-            Ok(document) => {
-                self.current_file = Some(path);
-                self.document = document;
-                self.dirty = false;
-                self.dirty_since = None;
-                self.save_status = SaveStatus::Saved;
-                self.markdown_cache = CommonMarkCache::default();
-                self.scroll_fraction = 0.0;
-                self.editor_max_scroll = 0.0;
-                self.preview_max_scroll = 0.0;
-            }
-            Err(error) => {
-                self.save_status =
-                    SaveStatus::Error(format!("Could not read {}: {error}", path.display()));
-            }
-        }
-    }
-
-    fn save_now(&mut self) -> bool {
-        if !self.dirty {
-            return true;
-        }
-
-        let Some(path) = self.current_file.as_ref() else {
-            return true;
-        };
-
-        match fs::write(path, self.document.as_bytes()) {
-            Ok(()) => {
-                self.dirty = false;
-                self.dirty_since = None;
-                self.save_status = SaveStatus::Saved;
-                true
-            }
-            Err(error) => {
-                self.dirty_since = None;
-                self.save_status = SaveStatus::Error(format!("Could not save: {error}"));
-                false
-            }
-        }
-    }
-
-    fn schedule_save(&mut self, context: &egui::Context) {
-        self.dirty = true;
-        self.dirty_since = Some(Instant::now());
-        self.save_status = SaveStatus::Pending;
-        context.request_repaint_after(AUTO_SAVE_DELAY);
-    }
-
-    fn save_if_due(&mut self) {
-        if self
-            .dirty_since
-            .is_some_and(|changed| changed.elapsed() >= AUTO_SAVE_DELAY)
+        // Opening the same file again selects its existing buffer rather than creating
+        // two competing autosaves (also handles symlink aliases).
+        let path = path.canonicalize().unwrap_or(path);
+        if let Some(index) = self
+            .documents
+            .iter()
+            .position(|document| document.path == path)
         {
-            self.save_now();
+            self.active = Some(index);
+            return;
+        }
+        match Document::open(path) {
+            Ok(document) => {
+                self.documents.push(document);
+                self.active = Some(self.documents.len() - 1);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
         }
     }
 
-    fn status_text(&self) -> (&str, Color32) {
-        match &self.save_status {
-            SaveStatus::Idle => ("STANDBY", MUTED),
-            SaveStatus::Pending => ("SYNCING", AMBER),
-            SaveStatus::Saved => ("SYNCED", LIME),
-            SaveStatus::Error(_) => ("FAULT", DANGER),
+    fn close_tab(&mut self, index: usize) {
+        if !self.documents[index].save_now() {
+            self.active = Some(index);
+            return;
         }
+        self.remove_tab(index);
     }
 
-    fn status_detail(&self) -> Option<&str> {
-        match &self.save_status {
-            SaveStatus::Error(message) => Some(message),
-            _ => None,
-        }
-    }
-
-    fn selected_label(&self) -> String {
-        self.current_file
-            .as_ref()
-            .map(|path| {
-                path.strip_prefix(&self.root)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string()
-            })
-            .unwrap_or_else(|| "NO FILE LINKED".to_owned())
-    }
-
-    fn image_base_uri(&self) -> String {
-        let directory = self
-            .current_file
-            .as_deref()
-            .and_then(Path::parent)
-            .unwrap_or(&self.root);
-        format!("file://{}/", directory.display())
-    }
-
-    fn document_stats(&self) -> (usize, usize, usize) {
-        if self.current_file.is_none() {
-            return (0, 0, 0);
-        }
-        let lines = self.document.lines().count().max(1);
-        let words = self.document.split_whitespace().count();
-        let characters = self.document.chars().count();
-        (lines, words, characters)
-    }
-
-    fn requested_scroll(&self, max_scroll: f32) -> f32 {
-        self.scroll_fraction * max_scroll
-    }
-
-    fn sync_scroll(
-        &mut self,
-        actual_offset: f32,
-        requested_offset: f32,
-        content_height: f32,
-        viewport_height: f32,
-        pane: ScrollPane,
-        context: &egui::Context,
-    ) {
-        let max_scroll = (content_height - viewport_height).max(0.0);
-        let previous_max = match pane {
-            ScrollPane::Editor => &mut self.editor_max_scroll,
-            ScrollPane::Preview => &mut self.preview_max_scroll,
+    fn remove_tab(&mut self, index: usize) {
+        self.documents.remove(index);
+        self.active = match self.active {
+            _ if self.documents.is_empty() => None,
+            Some(active) if active > index => Some(active - 1),
+            Some(active) if active == index => Some(index.min(self.documents.len() - 1)),
+            active => active,
         };
-        let dimensions_changed = (*previous_max - max_scroll).abs() > 0.5;
-        *previous_max = max_scroll;
+    }
 
-        if max_scroll > 0.0 && (actual_offset - requested_offset).abs() > 0.5 {
-            self.scroll_fraction = (actual_offset / max_scroll).clamp(0.0, 1.0);
-            context.request_repaint();
-        } else if dimensions_changed {
-            context.request_repaint();
+    fn save_all(&mut self) -> bool {
+        let mut saved = true;
+        for document in &mut self.documents {
+            // Do not short-circuit: other tabs should still be saved after an error.
+            saved = document.save_now() && saved;
+        }
+        saved
+    }
+
+    fn active_document(&self) -> Option<&Document> {
+        self.active.and_then(|index| self.documents.get(index))
+    }
+
+    fn show_toolbar(&mut self, context: &egui::Context) {
+        egui::TopBottomPanel::top("command_header")
+            .frame(pane_frame(VOID))
+            .show(context, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("GLYPH // WIRE")
+                            .size(22.0)
+                            .strong()
+                            .color(CYAN),
+                    );
+                    ui.separator();
+                    if ui
+                        .button("New Window")
+                        .on_hover_text("Open this folder in another window (Cmd/Ctrl+N)")
+                        .clicked()
+                    {
+                        self.new_window();
+                    }
+                    if let Some(index) = self.active {
+                        let document = &mut self.documents[index];
+                        let raw_label = if document.show_raw {
+                            "Hide raw"
+                        } else {
+                            "Show raw"
+                        };
+                        if ui
+                            .button(raw_label)
+                            .on_hover_text("Toggle the raw editor (Cmd/Ctrl+Shift+E)")
+                            .clicked()
+                        {
+                            document.show_raw = !document.show_raw;
+                        }
+                        if ui
+                            .button("Copy Markdown")
+                            .on_hover_text(
+                                "Copy the entire raw Markdown, including unsaved changes",
+                            )
+                            .clicked()
+                        {
+                            context.copy_text(document.text.clone());
+                        }
+                        let (status, color) = document.status();
+                        ui.label(RichText::new(status).color(color));
+                    }
+                });
+            });
+
+        if !self.documents.is_empty() {
+            let mut close = None;
+            egui::TopBottomPanel::top("document_tabs")
+                .frame(pane_frame(DEEP))
+                .show(context, |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("tabs_scroll")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for (index, document) in self.documents.iter().enumerate() {
+                                    ui.push_id(&document.path, |ui| {
+                                        let name = document
+                                            .path
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy();
+                                        let marker = if document.error().is_some() {
+                                            " !"
+                                        } else if document.is_dirty() {
+                                            " •"
+                                        } else {
+                                            ""
+                                        };
+                                        if ui
+                                            .selectable_label(
+                                                self.active == Some(index),
+                                                format!("{name}{marker}"),
+                                            )
+                                            .on_hover_text(document.path.display().to_string())
+                                            .clicked()
+                                        {
+                                            self.active = Some(index);
+                                        }
+                                        if ui
+                                            .button("×")
+                                            .on_hover_text("Close tab (Cmd/Ctrl+W)")
+                                            .clicked()
+                                        {
+                                            close = Some(index);
+                                        }
+                                        ui.separator();
+                                    });
+                                }
+                            });
+                        });
+                });
+            if let Some(index) = close {
+                self.close_tab(index);
+            }
         }
     }
-}
 
-#[derive(Clone, Copy)]
-enum ScrollPane {
-    Editor,
-    Preview,
+    fn delete_file(&mut self, path: &Path) {
+        // Unlinking a symlink must not close or discard edits to its target.
+        let is_symlink = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink());
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        match fs::remove_file(path) {
+            Ok(()) => {
+                if !is_symlink {
+                    if let Some(index) = self
+                        .documents
+                        .iter()
+                        .position(|document| document.path == canonical_path)
+                    {
+                        // Deliberately do not save a buffer whose file was just deleted.
+                        self.remove_tab(index);
+                    }
+                }
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not delete {}: {error}", path.display()))
+            }
+        }
+    }
+
+    fn show_delete_confirmation(&mut self, context: &egui::Context) {
+        let Some(path) = self.pending_delete.clone() else {
+            return;
+        };
+        let response = egui::Modal::new(egui::Id::new("confirm_delete")).show(context, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading("Delete file?");
+            ui.label(path.display().to_string());
+            ui.colored_label(
+                DANGER,
+                "This permanently deletes the file. It cannot be undone.",
+            );
+            ui.label("If open here, its tab will close and any unsaved changes will be discarded.");
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    self.pending_delete = None;
+                }
+                if ui
+                    .button(RichText::new("Delete file").color(DANGER))
+                    .clicked()
+                {
+                    self.delete_file(&path);
+                    self.pending_delete = None;
+                }
+            });
+        });
+        if response.should_close() {
+            self.pending_delete = None;
+        }
+    }
+
+    fn new_window(&mut self) {
+        if let Err(error) = crate::spawn_window(&self.root) {
+            self.error = Some(format!("Could not open a new window: {error}"));
+        }
+    }
 }
 
 impl eframe::App for GlyphwireApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
-        self.save_if_due();
-
-        let save_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
-        if context.input_mut(|input| input.consume_shortcut(&save_shortcut)) {
-            self.save_now();
+        for document in &mut self.documents {
+            document.save_if_due(context);
         }
 
-        egui::TopBottomPanel::top("command_header")
-            .exact_height(72.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(VOID)
-                    .stroke(Stroke::new(1.0_f32, BORDER))
-                    .inner_margin(egui::Margin::symmetric(18, 10)),
-            )
-            .show(context, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("GLYPH")
-                                    .family(FontFamily::Monospace)
-                                    .size(22.0)
-                                    .strong()
-                                    .color(MAGENTA),
-                            );
-                            ui.label(
-                                RichText::new("//WIRE")
-                                    .family(FontFamily::Monospace)
-                                    .size(22.0)
-                                    .strong()
-                                    .color(CYAN),
-                            );
-                        });
-                        ui.label(
-                            RichText::new(format!(
-                                "LOCAL MARKDOWN INTERFACE  v{}",
-                                env!("CARGO_PKG_VERSION")
-                            ))
-                            .monospace()
-                            .size(9.0)
-                            .color(MUTED),
-                        );
-                    });
+        let shortcuts_enabled = self.pending_delete.is_none();
+        let shortcut = |modifiers, key| {
+            shortcuts_enabled
+                && context.input_mut(|input| {
+                    input.consume_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
+                })
+        };
+        if shortcut(egui::Modifiers::COMMAND, egui::Key::S) {
+            self.save_all();
+        }
+        if shortcut(egui::Modifiers::COMMAND, egui::Key::N) {
+            self.new_window();
+        }
+        if shortcut(egui::Modifiers::COMMAND, egui::Key::W) {
+            if let Some(index) = self.active {
+                self.close_tab(index);
+            }
+        }
+        if shortcut(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::E,
+        ) {
+            if let Some(index) = self.active {
+                self.documents[index].show_raw = !self.documents[index].show_raw;
+            }
+        }
+        if context.input(|input| input.viewport().close_requested()) && !self.save_all() {
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
 
-                    ui.add_space(30.0);
-                    ui.label(RichText::new("FILE ::").monospace().size(11.0).color(MUTED));
-                    ui.label(
-                        RichText::new(self.selected_label())
-                            .monospace()
-                            .size(12.0)
-                            .color(TEXT),
-                    );
+        self.show_toolbar(context);
 
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let (status, color) = self.status_text();
-                        status_badge(ui, status, color);
-                        ui.label(
-                            RichText::new("AUTO-SAVE")
-                                .monospace()
-                                .size(10.0)
-                                .color(MUTED),
-                        );
-                    });
-                });
-            });
-
-        let (lines, words, characters) = self.document_stats();
-        egui::TopBottomPanel::bottom("telemetry_footer")
-            .exact_height(34.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(VOID)
-                    .stroke(Stroke::new(1.0_f32, BORDER))
-                    .inner_margin(egui::Margin::symmetric(14, 7)),
-            )
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("READY // LOCAL")
-                            .monospace()
-                            .size(10.0)
-                            .color(CYAN),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("LN {lines:04}  WD {words:04}  CH {characters:05}"))
-                            .monospace()
-                            .size(10.0)
-                            .color(MUTED),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new("CMD+S  FORCE SYNC")
-                                .monospace()
-                                .size(10.0)
-                                .color(MUTED),
-                        );
-                        ui.label(
-                            RichText::new("SCROLL // LINKED")
-                                .monospace()
-                                .size(10.0)
-                                .color(CYAN),
-                        );
-                        if let Some(error) = self.status_detail() {
-                            ui.label(RichText::new(error).monospace().size(10.0).color(DANGER));
+        let errors: Vec<_> = self
+            .error
+            .iter()
+            .map(String::as_str)
+            .chain(self.documents.iter().filter_map(Document::error))
+            .map(str::to_owned)
+            .collect();
+        if !errors.is_empty() {
+            egui::TopBottomPanel::bottom("errors")
+                .frame(pane_frame(VOID))
+                .show(context, |ui| {
+                    for error in errors {
+                        ui.colored_label(DANGER, error);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Retry save").clicked() {
+                            self.save_all();
+                        }
+                        if self.error.is_some() && ui.button("Dismiss").clicked() {
+                            self.error = None;
                         }
                     });
                 });
+        }
+
+        egui::TopBottomPanel::bottom("telemetry_footer")
+            .frame(pane_frame(VOID))
+            .show(context, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(document) = self.active_document() {
+                        ui.label(
+                            RichText::new(
+                                document
+                                    .path
+                                    .strip_prefix(&self.root)
+                                    .unwrap_or(&document.path)
+                                    .display()
+                                    .to_string(),
+                            )
+                            .color(CYAN),
+                        );
+                        ui.separator();
+                        ui.label(format!(
+                            "{} lines · {} words · {} characters",
+                            document.text.lines().count().max(1),
+                            document.text.split_whitespace().count(),
+                            document.text.chars().count()
+                        ));
+                        ui.separator();
+                        ui.label(if document.show_raw {
+                            "Linked scrolling"
+                        } else {
+                            "Preview only"
+                        });
+                    } else {
+                        ui.label("Choose a Markdown file to open a tab");
+                    }
+                });
             });
 
-        let root = self.root.clone();
-        let selected = self.current_file.clone();
+        let selected = self.active_document().map(|document| document.path.clone());
         let mut file_to_open = None;
-
         egui::SidePanel::left("file_browser")
-            .default_width(255.0)
+            .default_width(245.0)
             .min_width(170.0)
             .max_width(480.0)
             .resizable(true)
-            .frame(
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0_f32, BORDER))
-                    .inner_margin(egui::Margin::same(12)),
-            )
+            .frame(pane_frame(PANEL))
             .show(context, |ui| {
-                panel_header(ui, "01", "DATA TREE", "ALL FILES");
+                ui.heading("Files");
                 neon_rule(ui, MAGENTA);
-
-                let root_name = root
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .unwrap_or_else(|| root.to_str().unwrap_or("/"));
-                egui::Frame::new()
-                    .fill(SURFACE)
-                    .stroke(Stroke::new(1.0_f32, BORDER))
-                    .corner_radius(CornerRadius::same(3))
-                    .inner_margin(egui::Margin::symmetric(9, 7))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new("MOUNT POINT")
-                                .monospace()
-                                .size(9.0)
-                                .color(MUTED),
-                        );
-                        ui.label(
-                            RichText::new(root_name)
-                                .monospace()
-                                .size(12.0)
-                                .strong()
-                                .color(CYAN),
-                        );
-                    });
+                ui.label(
+                    RichText::new(self.root.file_name().and_then(OsStr::to_str).unwrap_or("/"))
+                        .strong()
+                        .color(CYAN),
+                )
+                .on_hover_text(self.root.display().to_string());
                 ui.add_space(7.0);
-
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        render_directory(ui, &root, selected.as_deref(), &mut file_to_open);
+                        render_directory(
+                            ui,
+                            &self.root,
+                            selected.as_deref(),
+                            &mut file_to_open,
+                            &mut self.pending_delete,
+                        );
                     });
-            });
-
-        egui::SidePanel::left("markdown_editor")
-            .default_width(575.0)
-            .min_width(300.0)
-            .resizable(true)
-            .frame(
-                egui::Frame::new()
-                    .fill(DEEP)
-                    .stroke(Stroke::new(1.0_f32, BORDER))
-                    .inner_margin(egui::Margin::same(12)),
-            )
-            .show(context, |ui| {
-                panel_header(ui, "02", "SOURCE BUFFER", "RAW MARKDOWN");
-                neon_rule(ui, CYAN);
-
-                if self.current_file.is_some() {
-                    let requested_scroll = self.requested_scroll(self.editor_max_scroll);
-                    let frame_output = egui::Frame::new()
-                        .fill(Color32::from_rgb(4, 8, 17))
-                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(20, 92, 108)))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::same(3))
-                        .show(ui, |ui| {
-                            egui::ScrollArea::both()
-                                .id_salt("markdown_editor_scroll")
-                                .vertical_scroll_offset(requested_scroll)
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    let editor = egui::TextEdit::multiline(&mut self.document)
-                                        .code_editor()
-                                        .text_color(TEXT)
-                                        .frame(false)
-                                        .lock_focus(true)
-                                        .desired_width(f32::INFINITY)
-                                        .desired_rows(36)
-                                        .margin(egui::Margin::same(12));
-                                    if ui.add_sized(ui.available_size(), editor).changed() {
-                                        self.schedule_save(context);
-                                    }
-                                })
-                        });
-                    let scroll_output = frame_output.inner;
-                    self.sync_scroll(
-                        scroll_output.state.offset.y,
-                        requested_scroll,
-                        scroll_output.content_size.y,
-                        scroll_output.inner_rect.height(),
-                        ScrollPane::Editor,
-                        context,
-                    );
-                } else {
-                    empty_state(
-                        ui,
-                        "AWAITING FILE SELECTION",
-                        "Choose an MD node from DATA TREE",
-                    );
-                }
-            });
-
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(egui::Margin::same(14)),
-            )
-            .show(context, |ui| {
-                panel_header(ui, "03", "RENDER FEED", "LIVE PREVIEW");
-                neon_rule(ui, MAGENTA);
-
-                if self.current_file.is_some() {
-                    let base_uri = self.image_base_uri();
-                    let requested_scroll = self.requested_scroll(self.preview_max_scroll);
-                    let frame_output = egui::Frame::new()
-                        .fill(Color32::from_rgb(10, 16, 29))
-                        .stroke(Stroke::new(1.0_f32, BORDER))
-                        .corner_radius(CornerRadius::same(3))
-                        .inner_margin(egui::Margin::same(14))
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("markdown_preview_scroll")
-                                .vertical_scroll_offset(requested_scroll)
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    let max_width = ui.available_width().max(1.0) as usize;
-                                    CommonMarkViewer::new()
-                                        .max_image_width(Some(max_width))
-                                        .default_width(Some(max_width))
-                                        .default_implicit_uri_scheme(base_uri)
-                                        .show(ui, &mut self.markdown_cache, &self.document);
-                                })
-                        });
-                    let scroll_output = frame_output.inner;
-                    self.sync_scroll(
-                        scroll_output.state.offset.y,
-                        requested_scroll,
-                        scroll_output.content_size.y,
-                        scroll_output.inner_rect.height(),
-                        ScrollPane::Preview,
-                        context,
-                    );
-                } else {
-                    empty_state(ui, "NO SIGNAL", "Rendered markdown will stream here");
-                }
             });
 
         if let Some(path) = file_to_open {
             self.load_file(path);
         }
+        if let Some(index) = self.active {
+            self.documents[index].show(context);
+        } else {
+            egui::CentralPanel::default().frame(pane_frame(PANEL)).show(context, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Select a Markdown file from the file browser. Each file opens in its own tab.");
+                });
+            });
+        }
+        self.show_delete_confirmation(context);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save_now();
+        self.save_all();
     }
 }
 
+fn pane_frame(fill: Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, BORDER))
+        .inner_margin(egui::Margin::same(12))
+}
+
 fn configure_theme(context: &egui::Context) {
+    // Bundle open-source fonts for consistent readability without system-font dependencies.
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, family, bytes) in [
+        (
+            "Source Sans 3",
+            FontFamily::Proportional,
+            include_bytes!("../assets/fonts/SourceSans3-Regular.ttf").as_slice(),
+        ),
+        (
+            "JetBrains Mono",
+            FontFamily::Monospace,
+            include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf").as_slice(),
+        ),
+    ] {
+        fonts
+            .font_data
+            .insert(name.to_owned(), egui::FontData::from_static(bytes).into());
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, name.to_owned());
+    }
+    context.set_fonts(fonts);
+
     let mut style = (*context.style()).clone();
     let mut visuals = egui::Visuals::dark();
-
     visuals.override_text_color = Some(TEXT);
     visuals.weak_text_color = Some(MUTED);
     visuals.panel_fill = PANEL;
@@ -526,14 +472,13 @@ fn configure_theme(context: &egui::Context) {
     visuals.text_edit_bg_color = Some(VOID);
     visuals.code_bg_color = SURFACE;
     visuals.faint_bg_color = SURFACE;
-    visuals.hyperlink_color = MAGENTA;
+    visuals.hyperlink_color = CYAN;
     visuals.warn_fg_color = AMBER;
     visuals.error_fg_color = DANGER;
     visuals.selection.bg_fill = Color32::from_rgba_premultiplied(35, 242, 255, 45);
     visuals.selection.stroke = Stroke::new(1.5_f32, CYAN);
     visuals.indent_has_left_vline = true;
     visuals.collapsing_header_frame = false;
-    visuals.button_frame = true;
     visuals.widgets.noninteractive.bg_fill = PANEL;
     visuals.widgets.noninteractive.weak_bg_fill = PANEL;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
@@ -562,101 +507,41 @@ fn configure_theme(context: &egui::Context) {
     }
     visuals.text_cursor.stroke = Stroke::new(2.0_f32, MAGENTA);
     visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
-
     style.visuals = visuals;
-    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
-    style.spacing.button_padding = egui::vec2(8.0, 5.0);
-    style.spacing.indent = 14.0;
+    style.spacing.item_spacing = egui::vec2(8.0, 9.0);
+    style.spacing.button_padding = egui::vec2(9.0, 5.0);
+    style.spacing.indent = 18.0;
     style.animation_time = 0.08;
-    style
-        .text_styles
-        .insert(TextStyle::Heading, FontId::new(17.0, FontFamily::Monospace));
-    style
-        .text_styles
-        .insert(TextStyle::Button, FontId::new(12.0, FontFamily::Monospace));
+    style.text_styles.insert(
+        TextStyle::Heading,
+        FontId::new(24.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Button,
+        FontId::new(16.0, FontFamily::Proportional),
+    );
     style.text_styles.insert(
         TextStyle::Monospace,
-        FontId::new(14.0, FontFamily::Monospace),
+        FontId::new(16.0, FontFamily::Monospace),
     );
     style
         .text_styles
-        .insert(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional));
-    style
-        .text_styles
-        .insert(TextStyle::Small, FontId::new(10.0, FontFamily::Monospace));
-
+        .insert(TextStyle::Body, FontId::new(18.0, FontFamily::Proportional));
+    style.text_styles.insert(
+        TextStyle::Small,
+        FontId::new(14.0, FontFamily::Proportional),
+    );
     context.set_style(style);
-}
-
-fn status_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.11))
-        .stroke(Stroke::new(1.0_f32, color))
-        .corner_radius(CornerRadius::same(3))
-        .inner_margin(egui::Margin::symmetric(9, 4))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(format!("+ {label}"))
-                    .monospace()
-                    .size(10.0)
-                    .strong()
-                    .color(color),
-            );
-        });
-}
-
-fn panel_header(ui: &mut egui::Ui, index: &str, title: &str, detail: &str) {
-    ui.horizontal(|ui| {
-        egui::Frame::new()
-            .fill(MAGENTA.gamma_multiply(0.16))
-            .stroke(Stroke::new(1.0_f32, MAGENTA))
-            .corner_radius(CornerRadius::same(2))
-            .inner_margin(egui::Margin::symmetric(5, 2))
-            .show(ui, |ui| {
-                ui.label(RichText::new(index).monospace().size(10.0).color(MAGENTA));
-            });
-        ui.label(
-            RichText::new(title)
-                .monospace()
-                .size(13.0)
-                .strong()
-                .color(TEXT),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(detail).monospace().size(9.0).color(MUTED));
-        });
-    });
 }
 
 fn neon_rule(ui: &mut egui::Ui, color: Color32) {
     let (response, painter) =
         ui.allocate_painter(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
-    let y = response.rect.center().y;
     painter.line_segment(
-        [
-            response.rect.left_center(),
-            egui::pos2(response.rect.right(), y),
-        ],
+        [response.rect.left_center(), response.rect.right_center()],
         Stroke::new(1.0_f32, color.gamma_multiply(0.65)),
     );
     painter.circle_filled(response.rect.left_center(), 2.0, color);
-}
-
-fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.centered_and_justified(|ui| {
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("< / >").monospace().size(30.0).color(MAGENTA));
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(title)
-                    .monospace()
-                    .size(13.0)
-                    .strong()
-                    .color(CYAN),
-            );
-            ui.label(RichText::new(detail).monospace().size(10.0).color(MUTED));
-        });
-    });
 }
 
 pub fn is_markdown(path: &Path) -> bool {
@@ -687,7 +572,6 @@ fn directory_entries(path: &Path) -> Result<Vec<DirectoryEntry>, std::io::Error>
             is_symlink: file_type.is_symlink(),
         });
     }
-
     entries.sort_by(|left, right| {
         right
             .is_directory
@@ -702,53 +586,45 @@ fn render_directory(
     directory: &Path,
     selected: Option<&Path>,
     file_to_open: &mut Option<PathBuf>,
+    file_to_delete: &mut Option<PathBuf>,
 ) {
     let entries = match directory_entries(directory) {
         Ok(entries) => entries,
         Err(error) => {
-            ui.label(
-                RichText::new(format!("ERR // {error}"))
-                    .monospace()
-                    .color(DANGER),
-            );
+            ui.colored_label(DANGER, format!("Could not read folder: {error}"));
             return;
         }
     };
-
     for entry in entries {
         if entry.is_directory && !entry.is_symlink {
-            egui::CollapsingHeader::new(
-                RichText::new(format!("// {}", entry.name))
-                    .monospace()
-                    .size(11.0)
-                    .strong()
-                    .color(CYAN.gamma_multiply(0.82)),
-            )
-            .id_salt(&entry.path)
-            .show(ui, |ui| {
-                render_directory(ui, &entry.path, selected, file_to_open);
-            });
+            egui::CollapsingHeader::new(RichText::new(&entry.name).strong().color(CYAN))
+                .id_salt(&entry.path)
+                .show(ui, |ui| {
+                    render_directory(ui, &entry.path, selected, file_to_open, file_to_delete);
+                });
             continue;
         }
-
         let markdown = is_markdown(&entry.path);
         let is_selected = selected == Some(entry.path.as_path());
-        let marker = if markdown { "MD" } else { "--" };
         let color = if markdown { TEXT } else { MUTED };
         let response = ui
-            .add_enabled(
-                markdown,
+            .add(
                 egui::Button::selectable(
                     is_selected,
-                    RichText::new(format!("{marker}  {}", entry.name))
-                        .monospace()
-                        .size(11.0)
-                        .color(color),
+                    RichText::new(&entry.name).size(16.0).color(color),
                 )
                 .frame(is_selected),
             )
             .on_hover_text(entry.path.display().to_string());
-
+        response.context_menu(|ui| {
+            if ui
+                .button(RichText::new("Delete file…").color(DANGER))
+                .clicked()
+            {
+                *file_to_delete = Some(entry.path.clone());
+                ui.close();
+            }
+        });
         if markdown && response.clicked() {
             *file_to_open = Some(entry.path);
         }
