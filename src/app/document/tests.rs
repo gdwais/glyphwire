@@ -378,3 +378,155 @@ fn delete_confirmation_can_be_cancelled_or_confirmed() {
     assert!(!path.exists());
     assert!(app.documents.is_empty());
 }
+
+fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+#[test]
+fn find_shortcut_focuses_query_navigates_scrolls_and_closes_without_editing() {
+    let directory = TestDirectory::new();
+    let text = format!(
+        "{}\nCafé target\n{}\nCAFÉ target",
+        "Start\n\n".repeat(90),
+        "Middle\n\n".repeat(90)
+    );
+    let path = directory.file("search.md", &text);
+    let mut document = Document::open(path).unwrap();
+    document.show_raw = false;
+    let context = egui::Context::default();
+    configure_theme(&context);
+    let show = |document: &mut Document, events| {
+        frame(&context, events, |context| {
+            document.handle_find_shortcuts(context);
+            document.show(context);
+        })
+    };
+    show(
+        &mut document,
+        vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+    );
+    assert!(document.find.open);
+    assert!(document.show_raw);
+    let input_id = egui::Id::new(&document.path).with("find_query");
+    assert!(context.memory(|memory| memory.has_focus(input_id)));
+    let output = show(&mut document, vec![egui::Event::Text("café".into())]);
+    text_center(&output, "1 of 2");
+    assert_eq!(document.find.matches.len(), 2);
+    for _ in 0..3 {
+        show(&mut document, vec![]);
+    }
+    assert!(
+        document.scroll_fraction > 0.1,
+        "Search should scroll to the first match"
+    );
+    let first_scroll = document.scroll_fraction;
+    show(
+        &mut document,
+        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+    );
+    assert_eq!(document.find.current, 1);
+    for _ in 0..3 {
+        show(&mut document, vec![]);
+    }
+    assert!(document.scroll_fraction > first_scroll);
+    assert!(context.memory(|memory| memory.has_focus(input_id)));
+    show(
+        &mut document,
+        vec![key(egui::Key::Enter, egui::Modifiers::SHIFT)],
+    );
+    assert_eq!(document.find.current, 0);
+    show(
+        &mut document,
+        vec![key(egui::Key::F, egui::Modifiers::COMMAND)],
+    );
+    let output = show(&mut document, vec![egui::Event::Text("missing".into())]);
+    text_center(&output, "No matches");
+    assert!(document.find.matches.is_empty());
+    show(
+        &mut document,
+        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+    assert!(!document.find.open);
+    assert_eq!(document.text, text);
+    assert!(!document.is_dirty());
+}
+
+#[test]
+fn file_picker_toggle_reclaims_space_and_preserves_open_document() {
+    let directory = TestDirectory::new();
+    let path = directory.file("notes.md", "Original");
+    let mut app = GlyphwireApp::open(path);
+    app.documents[0].text = "Unsaved edits".into();
+    app.documents[0].scroll_fraction = 0.4;
+    let context = egui::Context::default();
+    configure_theme(&context);
+    let mut content_left = 0.0;
+    let mut show = |context: &egui::Context| {
+        app.show_toolbar(context);
+        app.show_file_browser(context);
+        egui::CentralPanel::default().show(context, |ui| {
+            content_left = ui.max_rect().left();
+        });
+    };
+    let output = frame(&context, vec![], &mut show);
+    text_center(&output, "Files");
+    click(&context, text_center(&output, "Hide files"), &mut show);
+    let output = frame(&context, vec![], &mut show);
+    assert!(!output.shapes.iter().any(|shape| matches!(
+        &shape.shape, egui::Shape::Text(text) if text.galley.text() == "Files"
+    )));
+    click(&context, text_center(&output, "Show files"), &mut show);
+    let output = frame(&context, vec![], &mut show);
+    text_center(&output, "Files");
+    assert!(content_left > 170.0);
+    assert!(app.show_files);
+    assert_eq!(app.active, Some(0));
+    assert_eq!(app.documents[0].text, "Unsaved edits");
+    assert_eq!(app.documents[0].scroll_fraction, 0.4);
+
+    app.show_files = false;
+    frame(&context, vec![], |context| {
+        app.show_toolbar(context);
+        app.show_file_browser(context);
+        egui::CentralPanel::default().show(context, |ui| {
+            assert!(
+                ui.max_rect().left() < 20.0,
+                "Hidden picker must reclaim its width"
+            );
+        });
+    });
+}
+
+#[test]
+fn file_picker_can_be_restored_without_an_open_document() {
+    let directory = TestDirectory::new();
+    let mut app = GlyphwireApp::open(directory.0.clone());
+    let context = egui::Context::default();
+    let output = frame(&context, vec![], |context| app.show_toolbar(context));
+    click(&context, text_center(&output, "Hide files"), |context| {
+        app.show_toolbar(context)
+    });
+    assert!(!app.show_files);
+    let output = frame(&context, vec![], |context| app.show_toolbar(context));
+    click(&context, text_center(&output, "Show files"), |context| {
+        app.show_toolbar(context)
+    });
+    assert!(app.show_files);
+    assert!(app.documents.is_empty());
+}
+
+#[test]
+fn selection_theme_is_opaque_dark_grey_with_light_text() {
+    let context = egui::Context::default();
+    configure_theme(&context);
+    let selection = context.style().visuals.selection;
+    assert_eq!(selection.bg_fill, Color32::from_rgb(48, 50, 56));
+    assert_eq!(selection.stroke.color, TEXT);
+}

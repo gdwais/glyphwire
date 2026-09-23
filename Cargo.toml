@@ -1,15 +1,19 @@
 [package]
 name = "glyphwire"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A fast, cyberpunk-styled local Markdown editor and live preview for macOS"
 license = "MIT"
 repository = "https://github.com/gdwais/glyphwire"
 
 [dependencies]
-eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "glow"] }
+eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "wgpu"] }
+# Use native Metal, not macOS's deprecated OpenGL presentation path.
+wgpu = { version = "25", default-features = false, features = ["metal", "wgsl"] }
 egui_commonmark = { version = "=0.21.1", features = ["better_syntax_highlighting", "fetch", "svg"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+
+regex = "1"
 
 [profile.release]
 lto = "thin"

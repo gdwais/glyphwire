@@ -9,6 +9,7 @@ use eframe::egui::{
 };
 
 mod document;
+mod logo;
 use document::Document;
 
 const VOID: Color32 = Color32::from_rgb(3, 5, 12);
@@ -31,6 +32,7 @@ pub struct GlyphwireApp {
     active: Option<usize>,
     error: Option<String>,
     pending_delete: Option<PathBuf>,
+    show_files: bool,
 }
 
 impl GlyphwireApp {
@@ -57,6 +59,7 @@ impl GlyphwireApp {
             active: None,
             error: None,
             pending_delete: None,
+            show_files: true,
         };
         if let Some(path) = initial_file {
             app.load_file(path);
@@ -122,12 +125,7 @@ impl GlyphwireApp {
             .frame(pane_frame(VOID))
             .show(context, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("GLYPH // WIRE")
-                            .size(22.0)
-                            .strong()
-                            .color(CYAN),
-                    );
+                    logo::show(ui);
                     ui.separator();
                     if ui
                         .button("New Window")
@@ -135,6 +133,18 @@ impl GlyphwireApp {
                         .clicked()
                     {
                         self.new_window();
+                    }
+                    let files_label = if self.show_files {
+                        "Hide files"
+                    } else {
+                        "Show files"
+                    };
+                    if ui
+                        .button(files_label)
+                        .on_hover_text("Collapse or expand the file picker")
+                        .clicked()
+                    {
+                        self.show_files = !self.show_files;
                     }
                     if let Some(index) = self.active {
                         let document = &mut self.documents[index];
@@ -158,6 +168,13 @@ impl GlyphwireApp {
                             .clicked()
                         {
                             context.copy_text(document.text.clone());
+                        }
+                        if ui
+                            .button("Find")
+                            .on_hover_text("Find in document (Cmd/Ctrl+F)")
+                            .clicked()
+                        {
+                            document.open_find();
                         }
                         let (status, color) = document.status();
                         ui.label(RichText::new(status).color(color));
@@ -292,6 +309,11 @@ impl eframe::App for GlyphwireApp {
                     input.consume_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
                 })
         };
+        if shortcuts_enabled {
+            if let Some(index) = self.active {
+                self.documents[index].handle_find_shortcuts(context);
+            }
+        }
         if shortcut(egui::Modifiers::COMMAND, egui::Key::S) {
             self.save_all();
         }
@@ -377,6 +399,29 @@ impl eframe::App for GlyphwireApp {
                 });
             });
 
+        self.show_file_browser(context);
+        if let Some(index) = self.active {
+            self.documents[index].show(context);
+        } else {
+            egui::CentralPanel::default().frame(pane_frame(PANEL)).show(context, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Select a Markdown file from the file browser. Each file opens in its own tab.");
+                });
+            });
+        }
+        self.show_delete_confirmation(context);
+    }
+
+    fn on_exit(&mut self) {
+        self.save_all();
+    }
+}
+
+impl GlyphwireApp {
+    fn show_file_browser(&mut self, context: &egui::Context) {
+        if !self.show_files {
+            return;
+        }
         let selected = self.active_document().map(|document| document.path.clone());
         let mut file_to_open = None;
         egui::SidePanel::left("file_browser")
@@ -411,20 +456,6 @@ impl eframe::App for GlyphwireApp {
         if let Some(path) = file_to_open {
             self.load_file(path);
         }
-        if let Some(index) = self.active {
-            self.documents[index].show(context);
-        } else {
-            egui::CentralPanel::default().frame(pane_frame(PANEL)).show(context, |ui| {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Select a Markdown file from the file browser. Each file opens in its own tab.");
-                });
-            });
-        }
-        self.show_delete_confirmation(context);
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save_all();
     }
 }
 
@@ -475,8 +506,8 @@ fn configure_theme(context: &egui::Context) {
     visuals.hyperlink_color = CYAN;
     visuals.warn_fg_color = AMBER;
     visuals.error_fg_color = DANGER;
-    visuals.selection.bg_fill = Color32::from_rgba_premultiplied(35, 242, 255, 45);
-    visuals.selection.stroke = Stroke::new(1.5_f32, CYAN);
+    visuals.selection.bg_fill = Color32::from_rgb(48, 50, 56);
+    visuals.selection.stroke = Stroke::new(1.0_f32, TEXT);
     visuals.indent_has_left_vline = true;
     visuals.collapsing_header_frame = false;
     visuals.widgets.noninteractive.bg_fill = PANEL;

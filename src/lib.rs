@@ -77,18 +77,9 @@ fn run_app(path: PathBuf, command_name: &str) -> ExitCode {
         .map(|name| format!("{name} // Glyphwire"))
         .unwrap_or_else(|| "Glyphwire".to_owned());
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(&title)
-            .with_app_id("com.glyphwire.editor")
-            .with_inner_size([1480.0, 920.0])
-            .with_min_inner_size([960.0, 600.0]),
-        ..Default::default()
-    };
-
     match eframe::run_native(
         "Glyphwire",
-        native_options,
+        native_options(&title),
         Box::new(move |creation_context| Ok(Box::new(GlyphwireApp::new(creation_context, path)))),
     ) {
         Ok(()) => ExitCode::SUCCESS,
@@ -96,6 +87,41 @@ fn run_app(path: PathBuf, command_name: &str) -> ExitCode {
             eprintln!("{command_name}: could not open the application: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn native_options(title: &str) -> eframe::NativeOptions {
+    use eframe::egui_wgpu::{SurfaceErrorAction, WgpuConfiguration, WgpuSetupCreateNew};
+
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_app_id("com.glyphwire.editor")
+            .with_inner_size([1480.0, 920.0])
+            .with_min_inner_size([960.0, 600.0]),
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: WgpuConfiguration {
+            wgpu_setup: WgpuSetupCreateNew {
+                instance_descriptor: wgpu::InstanceDescriptor {
+                    // Avoid NSOpenGLContext/CGLFlushDrawable, which crashed inside AppKit
+                    // during a display reconfiguration. Do not allow an OpenGL fallback
+                    // or a WGPU_BACKEND environment override to re-enable that path.
+                    backends: wgpu::Backends::METAL,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .into(),
+            on_surface_error: std::sync::Arc::new(|error| match error {
+                // Display changes and resume can invalidate the presentation surface.
+                wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
+                    SurfaceErrorAction::RecreateSurface
+                }
+                _ => SurfaceErrorAction::SkipFrame,
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
     }
 }
 
@@ -138,6 +164,33 @@ fn parse_path(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn renderer_uses_metal_without_an_opengl_fallback() {
+        let options = native_options("Glyphwire test");
+        assert_eq!(options.renderer, eframe::Renderer::Wgpu);
+        let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = options.wgpu_options.wgpu_setup else {
+            panic!("Expected a new Metal instance");
+        };
+        assert_eq!(setup.instance_descriptor.backends, wgpu::Backends::METAL);
+    }
+
+    #[test]
+    fn invalidated_surfaces_are_reconfigured_and_timeouts_skip_a_frame() {
+        use eframe::egui_wgpu::SurfaceErrorAction;
+        let options = native_options("Glyphwire test");
+        let handle_error = options.wgpu_options.on_surface_error;
+        for error in [wgpu::SurfaceError::Lost, wgpu::SurfaceError::Outdated] {
+            assert!(matches!(
+                handle_error(error),
+                SurfaceErrorAction::RecreateSurface
+            ));
+        }
+        assert!(matches!(
+            handle_error(wgpu::SurfaceError::Timeout),
+            SurfaceErrorAction::SkipFrame
+        ));
+    }
 
     #[test]
     fn help_needs_no_path() {

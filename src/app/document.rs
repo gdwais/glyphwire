@@ -8,6 +8,9 @@ use std::{
 use super::*;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
+mod find;
+use find::Find;
+
 #[cfg(test)]
 mod tests;
 
@@ -17,6 +20,7 @@ pub(super) struct Document {
     pub path: PathBuf,
     pub text: String,
     pub show_raw: bool,
+    find: Find,
     dirty: bool,
     dirty_since: Option<Instant>,
     save_error: Option<String>,
@@ -34,6 +38,7 @@ impl Document {
             path,
             text,
             show_raw: true,
+            find: Find::default(),
             dirty: false,
             dirty_since: None,
             save_error: None,
@@ -74,6 +79,7 @@ impl Document {
     }
 
     fn schedule_save(&mut self, context: &egui::Context) {
+        self.find.refresh(&self.text);
         self.dirty = true;
         self.dirty_since = Some(Instant::now());
         self.save_error = None;
@@ -130,6 +136,7 @@ impl Document {
     }
 
     pub fn show(&mut self, context: &egui::Context) {
+        self.show_find(context);
         // File-specific IDs preserve cursor, selection, and scroll state across tab switches.
         let id = egui::Id::new(&self.path);
         if self.show_raw {
@@ -154,6 +161,12 @@ impl Document {
                         .vertical_scroll_offset(requested_scroll)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            let font = TextStyle::Monospace.resolve(ui.style());
+                            let mut layouter =
+                                |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                                    let job = self.find.layout(text.as_str(), font.clone(), width);
+                                    ui.fonts(|fonts| fonts.layout_job(job))
+                                };
                             let editor = egui::TextEdit::multiline(&mut self.text)
                                 .id(id.with("editor"))
                                 .code_editor()
@@ -162,9 +175,27 @@ impl Document {
                                 .lock_focus(true)
                                 .desired_width(f32::INFINITY)
                                 .desired_rows(36)
+                                .min_size(ui.available_size())
+                                .layouter(&mut layouter)
                                 .margin(egui::Margin::same(12));
-                            if ui.add_sized(ui.available_size(), editor).changed() {
+                            let output = editor.show(ui);
+                            if output.response.changed() {
                                 self.schedule_save(context);
+                            }
+                            if self.find.open && self.find.scroll_to_match {
+                                if let Some(range) = self.find.matches.get(self.find.current) {
+                                    let character = self.text[..range.start].chars().count();
+                                    let rect = output
+                                        .galley
+                                        .pos_from_cursor(egui::text::CCursor::new(character))
+                                        .translate(output.galley_pos.to_vec2());
+                                    ui.scroll_to_rect_animation(
+                                        rect.expand(24.0),
+                                        Some(Align::Center),
+                                        egui::style::ScrollAnimation::none(),
+                                    );
+                                }
+                                self.find.scroll_to_match = false;
                             }
                         });
                     self.sync_scroll(
