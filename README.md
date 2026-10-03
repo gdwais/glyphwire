@@ -14,11 +14,12 @@ A fast, cyberpunk-styled local Markdown editor and live preview for macOS, writt
 - Click preview task checkboxes to toggle `[ ]` / `[x]` in the Markdown
 - Linked proportional scrolling between source and preview panes
 - Auto-save edits and checkbox changes, including in background tabs
+- Automatically reload external file changes, with conflict protection for unsaved edits
 - Larger Source Sans 3 reading font, JetBrains Mono source font, and higher-contrast labels
 - CommonMark plus tables, task lists, strikethrough, footnotes, and highlighted code blocks
 - Local and remote images
 - Clickable links
-- Cyberpunk-inspired neon interface
+- Cyberpunk-inspired neon interface with a matching pixel-art Dock/app-switcher icon
 - Native Metal rendering via wgpu (no deprecated macOS OpenGL backend)
 - Non-blocking CLI—the terminal is released as soon as the window launches
 
@@ -83,6 +84,19 @@ Use **New Window** to open another browser for the same folder, or run `gw <PATH
 | Delete a file | Right-click its name → **Delete file…**, then confirm |
 
 Deletion is permanent (not moved to Trash). Deleting an open file closes its tab and discards its unsaved changes after confirmation. Failed saves keep the tab/window open and display an error with a retry button.
+
+### External file changes
+
+Glyphwire checks every open file's contents about once per second, including background tabs. Unedited tabs automatically reload external changes in both source and preview; search results refresh, and pane visibility and proportional scroll position are retained.
+
+If the file also has local edits, Glyphwire preserves your buffer, pauses autosave, and marks the tab with **!**. Select that tab to choose:
+
+- **Use disk (discard edits)**: load the latest disk version, discarding local changes.
+- **Keep my edits…**: confirm replacing the disk version with your local edits. If the disk changes again during confirmation, it is not overwritten; resolve the updated conflict instead.
+
+Every save checks the disk again, including Cmd/Ctrl+S and tab/window close. Unresolved conflicts keep the tab/window open. Missing or unreadable files preserve the buffer and pause autosave rather than recreating or overwriting the file; checks continue so recovery is detected. External reloads reset the editor's undo history to avoid restoring stale contents.
+
+These checks are not a cross-process lock: avoid having two programs write the same file at exactly the same instant.
 
 ### Fonts
 

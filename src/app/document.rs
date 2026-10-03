@@ -1,6 +1,5 @@
 use std::{
     fs,
-    io::Write,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -9,6 +8,7 @@ use super::*;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 mod find;
+mod sync;
 use find::Find;
 
 #[cfg(test)]
@@ -24,6 +24,12 @@ pub(super) struct Document {
     dirty: bool,
     dirty_since: Option<Instant>,
     save_error: Option<String>,
+    saved_text: String,
+    disk_error: Option<String>,
+    external_text: Option<String>,
+    disk_checked_at: Instant,
+    confirm_overwrite: Option<String>,
+    reset_editor_state: bool,
     markdown_cache: CommonMarkCache,
     scroll_fraction: f32,
     editor_max_scroll: f32,
@@ -36,12 +42,18 @@ impl Document {
             .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
         Ok(Self {
             path,
+            saved_text: text.clone(),
             text,
             show_raw: true,
             find: Find::default(),
             dirty: false,
             dirty_since: None,
             save_error: None,
+            disk_error: None,
+            external_text: None,
+            disk_checked_at: Instant::now(),
+            confirm_overwrite: None,
+            reset_editor_state: false,
             markdown_cache: CommonMarkCache::default(),
             scroll_fraction: 0.0,
             editor_max_scroll: 0.0,
@@ -53,51 +65,20 @@ impl Document {
         self.dirty
     }
 
-    pub fn save_now(&mut self) -> bool {
-        if !self.dirty {
-            return true;
-        }
-        // Never recreate a file deleted from another window or outside the app.
-        let result = fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self.path)
-            .and_then(|mut file| file.write_all(self.text.as_bytes()));
-        match result {
-            Ok(()) => {
-                self.dirty = false;
-                self.dirty_since = None;
-                self.save_error = None;
-                true
-            }
-            Err(error) => {
-                self.dirty_since = None;
-                self.save_error = Some(format!("Could not save {}: {error}", self.path.display()));
-                false
-            }
-        }
-    }
-
     fn schedule_save(&mut self, context: &egui::Context) {
         self.find.refresh(&self.text);
-        self.dirty = true;
-        self.dirty_since = Some(Instant::now());
+        self.dirty = self.text != self.saved_text;
+        self.dirty_since = (self.dirty && self.disk_error.is_none()).then(Instant::now);
         self.save_error = None;
         context.request_repaint_after(AUTO_SAVE_DELAY);
     }
 
-    pub fn save_if_due(&mut self, context: &egui::Context) {
-        if let Some(changed) = self.dirty_since {
-            if changed.elapsed() >= AUTO_SAVE_DELAY {
-                self.save_now();
-            } else {
-                context.request_repaint_after(AUTO_SAVE_DELAY.saturating_sub(changed.elapsed()));
-            }
-        }
-    }
-
     pub fn status(&self) -> (&str, Color32) {
-        if self.save_error.is_some() {
+        if self.has_conflict() {
+            ("CONFLICT — AUTOSAVE PAUSED", AMBER)
+        } else if self.disk_error.is_some() {
+            ("DISK UNAVAILABLE", DANGER)
+        } else if self.save_error.is_some() {
             ("SAVE FAILED", DANGER)
         } else if self.dirty {
             ("SAVING", AMBER)
@@ -107,7 +88,7 @@ impl Document {
     }
 
     pub fn error(&self) -> Option<&str> {
-        self.save_error.as_deref()
+        self.save_error.as_deref().or(self.disk_error.as_deref())
     }
 
     fn sync_scroll(
@@ -136,6 +117,13 @@ impl Document {
     }
 
     pub fn show(&mut self, context: &egui::Context) {
+        self.show_disk_conflict(context);
+        if self.reset_editor_state {
+            // Old undo history must not restore a buffer from before an external reload.
+            egui::text_edit::TextEditState::default()
+                .store(context, egui::Id::new(&self.path).with("editor"));
+            self.reset_editor_state = false;
+        }
         self.show_find(context);
         // File-specific IDs preserve cursor, selection, and scroll state across tab switches.
         let id = egui::Id::new(&self.path);
@@ -252,5 +240,6 @@ impl Document {
                     context,
                 );
             });
+        self.show_overwrite_confirmation(context);
     }
 }

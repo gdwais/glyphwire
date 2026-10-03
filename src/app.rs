@@ -9,7 +9,7 @@ use eframe::egui::{
 };
 
 mod document;
-mod logo;
+pub(crate) mod logo;
 use document::Document;
 
 const VOID: Color32 = Color32::from_rgb(3, 5, 12);
@@ -108,12 +108,17 @@ impl GlyphwireApp {
     }
 
     fn save_all(&mut self) -> bool {
-        let mut saved = true;
-        for document in &mut self.documents {
+        let mut first_failure = None;
+        for (index, document) in self.documents.iter_mut().enumerate() {
             // Do not short-circuit: other tabs should still be saved after an error.
-            saved = document.save_now() && saved;
+            if !document.save_now() {
+                first_failure.get_or_insert(index);
+            }
         }
-        saved
+        if let Some(index) = first_failure {
+            self.active = Some(index);
+        }
+        first_failure.is_none()
     }
 
     fn active_document(&self) -> Option<&Document> {
@@ -302,7 +307,10 @@ impl eframe::App for GlyphwireApp {
             document.save_if_due(context);
         }
 
-        let shortcuts_enabled = self.pending_delete.is_none();
+        let shortcuts_enabled = self.pending_delete.is_none()
+            && !self
+                .active_document()
+                .is_some_and(Document::has_sync_dialog);
         let shortcut = |modifiers, key| {
             shortcuts_enabled
                 && context.input_mut(|input| {

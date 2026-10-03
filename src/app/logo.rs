@@ -1,5 +1,5 @@
 //! Original bitmap artwork, painted on the physical pixel grid (no font or image filtering).
-use super::{egui, Color32, CYAN, MAGENTA, TEXT};
+use super::{egui, Color32, CYAN, MAGENTA, TEXT, VOID};
 use egui::emath::GuiRounding;
 
 const EMBLEM: [&str; 16] = [
@@ -35,6 +35,55 @@ const WORDMARK: [(char, [u8; 7]); 10] = [
     ('E', [31, 16, 16, 30, 16, 16, 31]),
 ];
 
+fn emblem_color(pixel: u8) -> Option<Color32> {
+    match pixel {
+        b'C' => Some(CYAN),
+        b'M' => Some(MAGENTA),
+        _ => None,
+    }
+}
+
+/// The same emblem as the toolbar, on a dark, pixel-rounded tile for the Dock.
+/// Build RGBA directly so no external asset or platform image decoder is needed.
+pub(crate) fn icon() -> egui::IconData {
+    const SIZE: u32 = 512;
+    const CELL: u32 = 24;
+    const PADDING: u32 = (SIZE - 16 * CELL) / 2;
+    let mut image = image::RgbaImage::from_fn(SIZE, SIZE, |x, y| {
+        // A stepped silhouette keeps the pixel-art style, with transparent corners.
+        let inset = match y / 16 {
+            0 | 1 | 30 | 31 => 32,
+            2 | 29 => 6,
+            3 | 28 => 4,
+            4 | 27 => 3,
+            _ => 2,
+        };
+        if x / 16 >= inset && x / 16 < 32 - inset {
+            image::Rgba(VOID.to_array())
+        } else {
+            image::Rgba([0, 0, 0, 0])
+        }
+    });
+    for (row, pixels) in EMBLEM.iter().enumerate() {
+        for (column, pixel) in pixels.bytes().enumerate() {
+            if let Some(color) = emblem_color(pixel) {
+                let left = PADDING + column as u32 * CELL;
+                let top = PADDING + row as u32 * CELL;
+                for y in top..top + CELL {
+                    for x in left..left + CELL {
+                        image.put_pixel(x, y, image::Rgba(color.to_array()));
+                    }
+                }
+            }
+        }
+    }
+    egui::IconData {
+        rgba: image.into_raw(),
+        width: SIZE,
+        height: SIZE,
+    }
+}
+
 pub(super) fn show(ui: &mut egui::Ui) {
     let scale = ui.pixels_per_point();
     // Integer physical pixels keep edges sharp at Retina and fractional UI scales.
@@ -56,10 +105,8 @@ pub(super) fn show(ui: &mut egui::Ui) {
     };
     for (y, row) in EMBLEM.iter().enumerate() {
         for (x, value) in row.bytes().enumerate() {
-            let color = match value {
-                b'C' => CYAN,
-                b'M' => MAGENTA,
-                _ => continue,
+            let Some(color) = emblem_color(value) else {
+                continue;
             };
             paint_pixel(
                 origin + egui::vec2(x as f32, y as f32) * pixel,
@@ -97,6 +144,32 @@ pub(super) fn show(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_icon_matches_the_emblem_with_an_opaque_tile_and_transparent_corners() {
+        let icon = icon();
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba.len(), 512 * 512 * 4);
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 512 + x) * 4;
+            &icon.rgba[offset..offset + 4]
+        };
+        for (x, y) in [(0, 0), (511, 0), (0, 511), (511, 511)] {
+            assert_eq!(pixel(x, y), [0, 0, 0, 0]);
+        }
+        assert_eq!(pixel(256, 48), VOID.to_array());
+        for (y, row) in EMBLEM.iter().enumerate() {
+            for (x, value) in row.bytes().enumerate() {
+                let expected = emblem_color(value).unwrap_or(VOID).to_array();
+                // All pixels of every enlarged artwork cell must remain crisp and identical.
+                for dy in 0..24 {
+                    for dx in 0..24 {
+                        assert_eq!(pixel(64 + x * 24 + dx, 64 + y * 24 + dy), expected);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn artwork_has_valid_pixel_dimensions_and_glyphs() {

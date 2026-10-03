@@ -97,6 +97,7 @@ fn native_options(title: &str) -> eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(title)
             .with_app_id("com.glyphwire.editor")
+            .with_icon(app::logo::icon())
             .with_inner_size([1480.0, 920.0])
             .with_min_inner_size([960.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,
@@ -164,6 +165,13 @@ fn parse_path(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn native_windows_use_the_toolbar_emblem_as_the_app_icon() {
+        let options = native_options("Glyphwire test");
+        let icon = options.viewport.icon.expect("Custom app icon");
+        assert_eq!(*icon, app::logo::icon());
+    }
 
     #[test]
     fn renderer_uses_metal_without_an_opengl_fallback() {

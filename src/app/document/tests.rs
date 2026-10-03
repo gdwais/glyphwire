@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod sync;
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {
