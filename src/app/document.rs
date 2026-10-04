@@ -212,7 +212,7 @@ impl Document {
                 let directory = self.path.parent().unwrap_or_else(|| Path::new("/"));
                 let base_uri = format!("file://{}/", directory.display());
                 let requested_scroll = self.scroll_fraction * self.preview_max_scroll;
-                let output = egui::ScrollArea::vertical()
+                let output = egui::ScrollArea::both()
                     .id_salt(id.with("preview_scroll"))
                     .vertical_scroll_offset(requested_scroll)
                     .auto_shrink([false, false])

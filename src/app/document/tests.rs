@@ -260,6 +260,48 @@ fn raw_pane_can_be_hidden_and_reopened_without_losing_text() {
 }
 
 #[test]
+fn wide_preview_content_scrolls_horizontally_with_or_without_raw_pane() {
+    let directory = TestDirectory::new();
+    let wide_cell = "Wide table content ".repeat(80).trim().to_owned();
+    let path = directory.file("wide.md", &format!("| Header |\n| --- |\n| {wide_cell} |"));
+    for show_raw in [false, true] {
+        let mut document = Document::open(path.clone()).unwrap();
+        document.show_raw = show_raw;
+        let context = egui::Context::default();
+        configure_theme(&context);
+        let mut output = frame(&context, vec![], |context| document.show(context));
+        for _ in 0..3 {
+            output = frame(&context, vec![], |context| document.show(context));
+        }
+        let before = text_center(&output, &wide_cell);
+        let heading = text_center(&output, "Preview");
+        frame(
+            &context,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(1200.0, before.y)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(-200.0, 0.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            |context| document.show(context),
+        );
+        for _ in 0..3 {
+            output = frame(&context, vec![], |context| document.show(context));
+        }
+        let after = text_center(&output, &wide_cell);
+        assert!(
+            after.x < before.x - 1.0,
+            "Wide content must scroll horizontally"
+        );
+        assert_eq!(after.y, before.y);
+        assert_eq!(text_center(&output, "Preview"), heading);
+        assert!(!document.is_dirty());
+    }
+}
+
+#[test]
 fn preview_checkbox_changes_only_its_marker_and_autosaves_both_directions() {
     let directory = TestDirectory::new();
     let original =

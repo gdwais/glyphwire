@@ -13,6 +13,7 @@ A fast, cyberpunk-styled local Markdown editor and live preview for macOS, writt
 - Dark-grey selection backgrounds keep selected text readable
 - Click preview task checkboxes to toggle `[ ]` / `[x]` in the Markdown
 - Linked proportional scrolling between source and preview panes
+- Horizontal preview scrolling keeps wide tables and overflowing content reachable
 - Auto-save edits and checkbox changes, including in background tabs
 - Automatically reload external file changes, with conflict protection for unsaved edits
 - Larger Source Sans 3 reading font, JetBrains Mono source font, and higher-contrast labels
